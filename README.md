@@ -1,4 +1,4 @@
-# parallel-db-server
+# bd-simulado
 
 Simulação de um gerenciador de banco de dados com processamento paralelo de requisições, desenvolvido para a disciplina de **Sistemas Operacionais** da Universidade do Vale do Itajaí (UNIVALI).
 
