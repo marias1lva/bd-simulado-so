@@ -7,6 +7,10 @@
 #include <thread>
 #include <vector>
 #include <algorithm>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "banco.h"
 
 //definições das variáveis globais declaradas em banco.h
@@ -202,53 +206,52 @@ void worker(int thread_id) {
 //main: cria o pool de threads e enfileira as requisições
 int main() {
     const int NUM_THREADS = 4;
-
     log("=== Servidor BD Simulado ===");
-    log("Pool de threads: " + std::to_string(NUM_THREADS));
-
-    //carrega dados persistidos (se banco.txt existir)
+    
     carregar_tabela();
 
-    //cria o pool de threads
+    // Cria o pipe (FIFO) se não existir
+    mkfifo(PIPE_NAME, 0666);
+
     std::vector<std::thread> pool;
-    pool.reserve(NUM_THREADS);
     for (int i = 0; i < NUM_THREADS; i++)
         pool.emplace_back(worker, i + 1);
 
-    //lote de requisições de teste
-    //na entrega final, esta parte será substituída pela leitura do pipe
-    //por enquanto enfileira manualmente para demonstrar as threads funcionando
-    {
-        std::lock_guard<std::mutex> lk(fila_mutex);
-        fila_requisicoes.push("INSERT id=1 nome=Maria");
-        fila_requisicoes.push("INSERT id=2 nome=Nicoly");
-        fila_requisicoes.push("INSERT id=3 nome=Felype");
-        fila_requisicoes.push("INSERT id=4 nome=Joao");
-        fila_requisicoes.push("SELECT id=2");
-        fila_requisicoes.push("SELECT *");
-        fila_requisicoes.push("UPDATE id=1 nome=MariaEduarda");
-        fila_requisicoes.push("DELETE id=3");
-        fila_requisicoes.push("SELECT *");
-        fila_requisicoes.push("INSERT id=3 nome=Felype"); //reinserção após delete
+    // Loop de escuta do IPC
+    log("[SERVIDOR] Aguardando conexões via Pipe: " + std::string(PIPE_NAME));
+    
+    while (!encerrar) {
+        // Abre o pipe para leitura
+        int fd = open(PIPE_NAME, O_RDONLY);
+        if (fd != -1) {
+            char buffer[256];
+            ssize_t bytesRead;
+            
+            // Lê comandos enviados pelo cliente
+            while ((bytesRead = read(fd, buffer, sizeof(buffer))) > 0) {
+                std::string comando(buffer);
+                
+                if (comando == "SAIR_SERVER") {
+                    encerrar = true;
+                    break;
+                }
+
+                // Enfileira a requisição para as threads
+                {
+                    std::lock_guard<std::mutex> lk(fila_mutex);
+                    fila_requisicoes.push(comando);
+                }
+                fila_cv.notify_one();
+            }
+            close(fd);
+        }
     }
+
+    // Notifica threads para encerramento
     fila_cv.notify_all();
-
-    //aguarda esvaziamento da fila (simples: dorme até ela zerar)
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::lock_guard<std::mutex> lk(fila_mutex);
-        if (fila_requisicoes.empty()) break;
-    }
-
-    //encerra o pool
-    {
-        std::lock_guard<std::mutex> lk(fila_mutex);
-        encerrar = true;
-    }
-    fila_cv.notify_all();
-
     for (auto& t : pool) t.join();
 
-    log("=== Servidor encerrado. Verifique banco.txt e banco.log ===");
+    unlink(PIPE_NAME); // Remove o pipe ao fechar
+    log("=== Servidor encerrado ===");
     return 0;
 }

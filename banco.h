@@ -6,6 +6,10 @@
 #include <queue>
 #include <condition_variable>
 #include <functional>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 //estrutura do registro
 struct Registro {
@@ -34,3 +38,5 @@ void processar_requisicao(const std::string& req);
 
 //worker das threads
 void worker(int thread_id);
+
+const char* PIPE_NAME = "/tmp/db_pipe";
