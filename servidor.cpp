@@ -1,27 +1,29 @@
-//para compilar:  g++ -std=c++17 servidor.cpp -o servidor -lpthread
-//para executar:  ./servidor
+// para compilar:  g++ -std=c++17 servidor.cpp -o servidor -lpthread
+// para executar:  ./servidor
 
-#include <iostream>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <thread>
 #include <vector>
-#include <algorithm>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
+
 #include "banco.h"
 
-//definições das variáveis globais declaradas em banco.h
-std::vector<Registro>   tabela;
-std::mutex              db_mutex;
+// definições das variáveis globais declaradas em banco.h
+std::vector<Registro> tabela;
+std::mutex db_mutex;
 std::queue<std::string> fila_requisicoes;
-std::mutex              fila_mutex;
+std::mutex fila_mutex;
 std::condition_variable fila_cv;
-bool                    encerrar = false;
+bool encerrar = false;
 
-//utilitário
+// utilitário
 static std::mutex log_mutex;
 
 void log(const std::string& msg) {
@@ -32,10 +34,10 @@ void log(const std::string& msg) {
     if (f.is_open()) f << msg << "\n";
 }
 
-//persistência: salva tabela inteira em banco.txt
+// persistência: salva tabela inteira em banco.txt
 //(chamada sempre que há INSERT, DELETE ou UPDATE)
 static void salvar_tabela() {
-    //db_mutex já deve estar travado pelo chamador
+    // db_mutex já deve estar travado pelo chamador
     std::ofstream f("banco.txt");
     if (!f.is_open()) return;
     f << "id,nome\n";
@@ -43,19 +45,19 @@ static void salvar_tabela() {
         f << r.id << "," << r.nome << "\n";
 }
 
-//carga inicial: lê banco.txt se existir
+// carga inicial: lê banco.txt se existir
 static void carregar_tabela() {
     std::ifstream f("banco.txt");
     if (!f.is_open()) return;
 
     std::string linha;
-    std::getline(f, linha); //pula cabeçalho "id,nome"
+    std::getline(f, linha);  // pula cabeçalho "id,nome"
 
     while (std::getline(f, linha)) {
         if (linha.empty()) continue;
         std::istringstream ss(linha);
         std::string sid, snome;
-        std::getline(ss, sid,   ',');
+        std::getline(ss, sid, ',');
         std::getline(ss, snome, ',');
         if (!sid.empty() && !snome.empty())
             tabela.push_back({std::stoi(sid), snome});
@@ -63,11 +65,11 @@ static void carregar_tabela() {
     log("[SERVIDOR] Tabela carregada: " + std::to_string(tabela.size()) + " registro(s).");
 }
 
-//CRUD
+// CRUD
 void executar_insert(int id, const std::string& nome) {
     std::lock_guard<std::mutex> lk(db_mutex);
 
-    //verifica duplicata
+    // verifica duplicata
     for (const auto& r : tabela) {
         if (r.id == id) {
             log("[INSERT] ERRO: id=" + std::to_string(id) + " ja existe.");
@@ -105,7 +107,7 @@ void executar_delete(int id) {
     std::lock_guard<std::mutex> lk(db_mutex);
 
     auto it = std::remove_if(tabela.begin(), tabela.end(),
-        [id](const Registro& r){ return r.id == id; });
+                             [id](const Registro& r) { return r.id == id; });
 
     if (it == tabela.end()) {
         log("[DELETE] ERRO: id=" + std::to_string(id) + " nao encontrado.");
@@ -131,19 +133,19 @@ void executar_update(int id, const std::string& novo_nome) {
     log("[UPDATE] ERRO: id=" + std::to_string(id) + " nao encontrado.");
 }
 
-//parser de requisição simples
+// parser de requisição simples
 void processar_requisicao(const std::string& req) {
     std::istringstream ss(req);
     std::string op;
     ss >> op;
 
-    //converte para maiúsculo
+    // converte para maiúsculo
     for (auto& c : op) c = std::toupper(c);
 
     if (op == "INSERT") {
         std::string sid, snome;
-        ss >> sid >> snome;                 
-        int id = std::stoi(sid.substr(3)); 
+        ss >> sid >> snome;
+        int id = std::stoi(sid.substr(3));
         std::string nome = snome.substr(5);
         executar_insert(id, nome);
 
@@ -175,26 +177,26 @@ void processar_requisicao(const std::string& req) {
     }
 }
 
-//worker: cada thread do pool executa esta função
-//padrão produtor-consumidor com condition_variable
+// worker: cada thread do pool executa esta função
+// padrão produtor-consumidor com condition_variable
 void worker(int thread_id) {
     log("[THREAD " + std::to_string(thread_id) + "] Iniciada.");
 
     while (true) {
         std::unique_lock<std::mutex> lk(fila_mutex);
 
-        //bloqueia até ter trabalho OU sinal de encerramento
-        fila_cv.wait(lk, []{
+        // bloqueia até ter trabalho OU sinal de encerramento
+        fila_cv.wait(lk, [] {
             return !fila_requisicoes.empty() || encerrar;
         });
 
-        //encerra se não há mais trabalho
+        // encerra se não há mais trabalho
         if (encerrar && fila_requisicoes.empty()) break;
 
-        //pega a próxima requisição
+        // pega a próxima requisição
         std::string req = fila_requisicoes.front();
         fila_requisicoes.pop();
-        lk.unlock(); //libera o mutex da fila antes de processar
+        lk.unlock();  // libera o mutex da fila antes de processar
 
         log("[THREAD " + std::to_string(thread_id) + "] Processando: " + req);
         processar_requisicao(req);
@@ -203,11 +205,11 @@ void worker(int thread_id) {
     log("[THREAD " + std::to_string(thread_id) + "] Encerrada.");
 }
 
-//main: cria o pool de threads e enfileira as requisições
+// main: cria o pool de threads e enfileira as requisições
 int main() {
     const int NUM_THREADS = 4;
     log("=== Servidor BD Simulado ===");
-    
+
     carregar_tabela();
 
     // Cria o pipe (FIFO) se não existir
@@ -219,39 +221,30 @@ int main() {
 
     // Loop de escuta do IPC
     log("[SERVIDOR] Aguardando conexões via Pipe: " + std::string(PIPE_NAME));
-    
-    while (!encerrar) {
-        // Abre o pipe para leitura
-        int fd = open(PIPE_NAME, O_RDONLY);
-        if (fd != -1) {
-            char buffer[256];
-            ssize_t bytesRead;
-            
-            // Lê comandos enviados pelo cliente
-            while ((bytesRead = read(fd, buffer, sizeof(buffer))) > 0) {
-                std::string comando(buffer);
-                
-                if (comando == "SAIR_SERVER") {
-                    encerrar = true;
-                    break;
-                }
 
-                // Enfileira a requisição para as threads
-                {
-                    std::lock_guard<std::mutex> lk(fila_mutex);
-                    fila_requisicoes.push(comando);
-                }
-                fila_cv.notify_one();
-            }
-            close(fd);
+    while ((bytesRead = read(fd, buffer, sizeof(buffer))) > 0) {
+        std::string comando(buffer, bytesRead);
+
+        // remove \n
+        comando.erase(std::remove(comando.begin(), comando.end(), '\n'), comando.end());
+
+        if (comando == "SAIR_SERVER") {
+            encerrar = true;
+            break;
         }
+
+        {
+            std::lock_guard<std::mutex> lk(fila_mutex);
+            fila_requisicoes.push(comando);
+        }
+        fila_cv.notify_one();
     }
 
     // Notifica threads para encerramento
     fila_cv.notify_all();
     for (auto& t : pool) t.join();
 
-    unlink(PIPE_NAME); // Remove o pipe ao fechar
+    unlink(PIPE_NAME);  // Remove o pipe ao fechar
     log("=== Servidor encerrado ===");
     return 0;
 }
